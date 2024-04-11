@@ -61,7 +61,8 @@ async function playSong(guildId) {
 
 client.once('ready', () => {
     console.log('Music Bot Ready!');
-     console.log('CODED BY DEVRY!');
+    console.log(`Logged in as ${client.user.tag}!`);
+    console.log('CODED BY DEVRY!');
 });
 
 client.once('reconnecting', () => {
@@ -102,6 +103,7 @@ client.on('messageCreate', async message => {
                 .setColor('#0099ff')
                 .setTitle('Song Added to Queue')
             message.channel.send({ embeds: [embed] });
+            message.delete().catch(console.error);
 
             if (queue.length === 1) {
                 playSong(message.guild.id);
@@ -119,6 +121,7 @@ client.on('messageCreate', async message => {
             .setTitle('Music Stopped')
             .setDescription('The music has been stopped and the queue has been cleared.');
         message.channel.send({ embeds: [embed] });
+        message.delete().catch(console.error);
     } else if (command === 'pause') {
         if (player.state.status !== AudioPlayerStatus.Paused) {
             player.pause();
@@ -129,6 +132,7 @@ client.on('messageCreate', async message => {
             .setTitle('Music Paused')
             .setDescription('The music has been paused.');
         message.channel.send({ embeds: [embed] });
+           message.delete().catch(console.error);
     } else if (command === 'resume') {
         if (player.state.status === AudioPlayerStatus.Paused) {
             player.unpause();
@@ -139,6 +143,7 @@ client.on('messageCreate', async message => {
             .setTitle('Music Resumed')
             .setDescription('The music has been resumed.');
         message.channel.send({ embeds: [embed] });
+         message.delete().catch(console.error);
     } else if (command === 'help') {
         const embed = new Discord.MessageEmbed()
             .setColor('#0099ff')
@@ -152,6 +157,7 @@ client.on('messageCreate', async message => {
             );
         
         message.channel.send({ embeds: [embed] });
+        message.delete().catch(console.error);
     }
 });
 
