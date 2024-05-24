@@ -22,6 +22,10 @@ const client = new Discord.Client({
 const player = createAudioPlayer();
 const queues = new Map();
 
+player.on('error', error => {
+    console.error('Error:', error.message, 'with resource', error.resource.metadata);
+});
+
 function saveQueue() {
     const queueData = {};
     queues.forEach((queue, guildId) => {
@@ -85,9 +89,7 @@ async function playSong(guildId, textChannel) {
 }
 
 client.once('ready', () => {
-    console.log('Music Bot Ready!');
     console.log(`Logged in as ${client.user.tag}!`);
-    console.log('CODED BY DEVRY!');
     loadQueue(); // Load the queue from the JSON file when the bot starts
 });
 
@@ -192,17 +194,6 @@ client.on('messageCreate', async message => {
             .setDescription('The music has been resumed.');
         message.channel.send({ embeds: [embed] });
         message.delete().catch(console.error);
-    } else if (command === 'skip') {
-        if (player.state.status === AudioPlayerStatus.Playing) {
-            player.stop(true); // Stop the current song and trigger the next one
-        }
-
-        const embed = new Discord.MessageEmbed()
-            .setColor('#0099ff')
-            .setTitle('Song Skipped')
-            .setDescription('The current song has been skipped.');
-        message.channel.send({ embeds: [embed] });
-        message.delete().catch(console.error);
     } else if (command === 'help') {
         const embed = new Discord.MessageEmbed()
             .setColor('#0099ff')
@@ -212,8 +203,7 @@ client.on('messageCreate', async message => {
                 { name: `${process.env.PREFIX}play [url]`, value: 'Add a song from YouTube to the queue.' },
                 { name: `${process.env.PREFIX}stop`, value: 'Stop the currently playing song and clear the queue.' },
                 { name: `${process.env.PREFIX}pause`, value: 'Pause the currently playing song.' },
-                { name: `${process.env.PREFIX}resume`, value: 'Resume the currently playing song.' },
-                { name: `${process.env.PREFIX}skip`, value: 'Skip the currently playing song and play the next one in the queue.' }
+                { name: `${process.env.PREFIX}resume`, value: 'Resume the currently playing song.' }
             );
 
         message.channel.send({ embeds: [embed] });
