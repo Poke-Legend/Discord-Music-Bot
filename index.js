@@ -1,13 +1,13 @@
 const Discord = require('discord.js');
 const ytdl = require('ytdl-core');
+const fs = require('fs');
 const {
     joinVoiceChannel,
     createAudioPlayer,
     createAudioResource,
     AudioPlayerStatus,
-    VoiceConnectionStatus,
     getVoiceConnection,
-    entersState
+    VoiceConnectionStatus
 } = require('@discordjs/voice');
 require('dotenv').config();
 
@@ -22,40 +22,65 @@ const client = new Discord.Client({
 const player = createAudioPlayer();
 const queues = new Map();
 
-async function playSong(guildId) {
+function saveQueue() {
+    const queueData = {};
+    queues.forEach((queue, guildId) => {
+        queueData[guildId] = queue;
+    });
+    fs.writeFileSync('queue.json', JSON.stringify(queueData, null, 2));
+}
+
+function clearQueueFile() {
+    fs.writeFileSync('queue.json', JSON.stringify({}, null, 2));
+}
+
+function loadQueue() {
+    if (fs.existsSync('queue.json')) {
+        const data = fs.readFileSync('queue.json');
+        const queueData = JSON.parse(data);
+        for (const guildId in queueData) {
+            queues.set(guildId, queueData[guildId]);
+        }
+    }
+}
+
+async function playSong(guildId, textChannel) {
     const queue = queues.get(guildId);
     if (!queue || queue.length === 0) {
+        clearQueueFile(); // Clear the queue file when there are no more songs
         return;
     }
 
     const url = queue[0];
-    const stream = ytdl(url, { filter : 'audioonly' });
+    const stream = ytdl(url, { filter: 'audioonly' });
     const resource = createAudioResource(stream);
+    const info = await ytdl.getInfo(url);
+    const title = info.videoDetails.title;
 
     player.play(resource);
 
     player.once(AudioPlayerStatus.Idle, () => {
         queue.shift();
-        playSong(guildId);
+        saveQueue();
+        playSong(guildId, textChannel);
     });
 
-    const channel = client.channels.cache.get(guildId);
-    if (channel) {
+    if (textChannel) {
         const embed = new Discord.MessageEmbed()
             .setColor('#0099ff')
             .setTitle('Now Playing')
-            .setDescription(`[${url}](${url})`);
-        channel.send({ embeds: [embed] });
+            .setDescription(title);
+        textChannel.send({ embeds: [embed] });
 
         if (queue[1]) {
+            const nextInfo = await ytdl.getInfo(queue[1]);
+            const nextTitle = nextInfo.videoDetails.title;
             const nextEmbed = new Discord.MessageEmbed()
                 .setColor('#0099ff')
                 .setTitle('Up Next')
-                .setDescription(`[${queue[1]}](${queue[1]})`);
-            channel.send({ embeds: [nextEmbed] });
+                .setDescription(nextTitle);
+            textChannel.send({ embeds: [nextEmbed] });
         }
-    } else {
-        //console.log(`Channel with ID ${guildId} not found`);
     }
 }
 
@@ -63,6 +88,7 @@ client.once('ready', () => {
     console.log('Music Bot Ready!');
     console.log(`Logged in as ${client.user.tag}!`);
     console.log('CODED BY DEVRY!');
+    loadQueue(); // Load the queue from the JSON file when the bot starts
 });
 
 client.once('reconnecting', () => {
@@ -80,34 +106,55 @@ client.on('messageCreate', async message => {
     const args = message.content.substring(process.env.PREFIX.length).split(' ');
     const command = args.shift().toLowerCase();
 
-    if (command === 'play'){
+    if (command === 'play') {
         const voiceChannel = message.member.voice.channel;
-        if (voiceChannel) {
-            const connection = joinVoiceChannel({
-                channelId: voiceChannel.id,
-                guildId: message.guild.id,
-                adapterCreator: message.guild.voiceAdapterCreator
-            });
-
-            connection.subscribe(player);
-
-            let queue = queues.get(message.guild.id);
-            if (!queue) {
-                queue = [];
-                queues.set(message.guild.id, queue);
-            }
-
-            queue.push(args[0]);
-
+        if (!voiceChannel) {
             const embed = new Discord.MessageEmbed()
-                .setColor('#0099ff')
-                .setTitle('Song Added to Queue')
+                .setColor('#ff0000')
+                .setTitle('Error')
+                .setDescription('You need to be in a voice channel to play music!');
             message.channel.send({ embeds: [embed] });
-            message.delete().catch(console.error);
+            return;
+        }
 
-            if (queue.length === 1) {
-                playSong(message.guild.id);
-            }
+        if (args.length === 0) {
+            const embed = new Discord.MessageEmbed()
+                .setColor('#ff0000')
+                .setTitle('Error')
+                .setDescription('You need to provide a YouTube URL!');
+            message.channel.send({ embeds: [embed] });
+            return;
+        }
+
+        const connection = joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: message.guild.id,
+            adapterCreator: message.guild.voiceAdapterCreator
+        });
+
+        connection.subscribe(player);
+
+        let queue = queues.get(message.guild.id);
+        if (!queue) {
+            queue = [];
+            queues.set(message.guild.id, queue);
+        }
+
+        queue.push(args[0]);
+        saveQueue(); // Save the queue to the JSON file
+
+        const info = await ytdl.getInfo(args[0]);
+        const title = info.videoDetails.title;
+
+        const embed = new Discord.MessageEmbed()
+            .setColor('#0099ff')
+            .setTitle('Song Added to Queue')
+            .setDescription(title);
+        message.channel.send({ embeds: [embed] });
+        message.delete().catch(console.error);
+
+        if (queue.length === 1) {
+            playSong(message.guild.id, message.channel);
         }
     } else if (command === 'stop') {
         const connection = getVoiceConnection(message.guild.id);
@@ -115,6 +162,7 @@ client.on('messageCreate', async message => {
             connection.destroy();
         }
         queues.delete(message.guild.id);
+        saveQueue(); // Save the empty queue to the JSON file
 
         const embed = new Discord.MessageEmbed()
             .setColor('#0099ff')
@@ -132,7 +180,7 @@ client.on('messageCreate', async message => {
             .setTitle('Music Paused')
             .setDescription('The music has been paused.');
         message.channel.send({ embeds: [embed] });
-           message.delete().catch(console.error);
+        message.delete().catch(console.error);
     } else if (command === 'resume') {
         if (player.state.status === AudioPlayerStatus.Paused) {
             player.unpause();
@@ -143,7 +191,18 @@ client.on('messageCreate', async message => {
             .setTitle('Music Resumed')
             .setDescription('The music has been resumed.');
         message.channel.send({ embeds: [embed] });
-         message.delete().catch(console.error);
+        message.delete().catch(console.error);
+    } else if (command === 'skip') {
+        if (player.state.status === AudioPlayerStatus.Playing) {
+            player.stop(true); // Stop the current song and trigger the next one
+        }
+
+        const embed = new Discord.MessageEmbed()
+            .setColor('#0099ff')
+            .setTitle('Song Skipped')
+            .setDescription('The current song has been skipped.');
+        message.channel.send({ embeds: [embed] });
+        message.delete().catch(console.error);
     } else if (command === 'help') {
         const embed = new Discord.MessageEmbed()
             .setColor('#0099ff')
@@ -154,8 +213,9 @@ client.on('messageCreate', async message => {
                 { name: `${process.env.PREFIX}stop`, value: 'Stop the currently playing song and clear the queue.' },
                 { name: `${process.env.PREFIX}pause`, value: 'Pause the currently playing song.' },
                 { name: `${process.env.PREFIX}resume`, value: 'Resume the currently playing song.' },
+                { name: `${process.env.PREFIX}skip`, value: 'Skip the currently playing song and play the next one in the queue.' }
             );
-        
+
         message.channel.send({ embeds: [embed] });
         message.delete().catch(console.error);
     }
