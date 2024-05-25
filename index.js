@@ -60,6 +60,7 @@ async function playSong(guildId, textChannel) {
     const resource = createAudioResource(stream);
     const info = await ytdl.getInfo(url);
     const title = info.videoDetails.title;
+    const thumbnailUrl = info.videoDetails.thumbnails[0].url; // Get the first thumbnail URL
 
     player.play(resource);
 
@@ -73,7 +74,8 @@ async function playSong(guildId, textChannel) {
         const embed = new Discord.MessageEmbed()
             .setColor('#0099ff')
             .setTitle('Now Playing')
-            .setDescription(title);
+            .setDescription(title)
+            .setThumbnail(thumbnailUrl); // Set the thumbnail image
         textChannel.send({ embeds: [embed] });
 
         if (queue[1]) {
@@ -194,6 +196,23 @@ client.on('messageCreate', async message => {
             .setDescription('The music has been resumed.');
         message.channel.send({ embeds: [embed] });
         message.delete().catch(console.error);
+    } else if (command === 'skip') {
+        const queue = queues.get(message.guild.id);
+        if (queue && queue.length > 0) {
+            player.stop(); // Stop the current song, triggering the player to move to the next song
+            const embed = new Discord.MessageEmbed()
+                .setColor('#0099ff')
+                .setTitle('Song Skipped')
+                .setDescription('The current song has been skipped.');
+            message.channel.send({ embeds: [embed] });
+        } else {
+            const embed = new Discord.MessageEmbed()
+                .setColor('#ff0000')
+                .setTitle('Error')
+                .setDescription('There are no songs in the queue to skip.');
+            message.channel.send({ embeds: [embed] });
+        }
+        message.delete().catch(console.error);
     } else if (command === 'help') {
         const embed = new Discord.MessageEmbed()
             .setColor('#0099ff')
@@ -203,11 +222,12 @@ client.on('messageCreate', async message => {
                 { name: `${process.env.PREFIX}play [url]`, value: 'Add a song from YouTube to the queue.' },
                 { name: `${process.env.PREFIX}stop`, value: 'Stop the currently playing song and clear the queue.' },
                 { name: `${process.env.PREFIX}pause`, value: 'Pause the currently playing song.' },
-                { name: `${process.env.PREFIX}resume`, value: 'Resume the currently playing song.' }
+                { name: `${process.env.PREFIX}resume`, value: 'Resume the currently playing song.' },
+                { name: `${process.env.PREFIX}skip`, value: 'Skip to the next song in the queue.' }
             );
 
-        message.channel.send({ embeds: [embed] });
-        message.delete().catch(console.error);
+        const helpMessage = await message.channel.send({ embeds: [embed] });
+        setTimeout(() => helpMessage.delete().catch(console.error), 10000);
     }
 });
 
