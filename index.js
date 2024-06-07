@@ -6,8 +6,7 @@ const {
     createAudioPlayer,
     createAudioResource,
     AudioPlayerStatus,
-    getVoiceConnection,
-    VoiceConnectionStatus
+    getVoiceConnection
 } = require('@discordjs/voice');
 require('dotenv').config();
 
@@ -21,12 +20,15 @@ const client = new Discord.Client({
 
 const player = createAudioPlayer();
 const queues = new Map();
-const lastNowPlaying = new Map(); // To track the last "Now Playing" message for each guild
-const lastAddedToQueue = new Map(); // To track the last "Song Added to Queue" message for each guild
-const lastUpNext = new Map(); // To track the last "Up Next" message for each guild
+const lastNowPlaying = new Map();
+const lastAddedToQueue = new Map();
+const lastUpNext = new Map();
 
 player.on('error', error => {
-    console.error('Error:', error.message, 'with resource', error.resource.metadata);
+    console.error('Player Error:', error.message);
+    if (error.resource && error.resource.metadata) {
+        console.error('with resource', error.resource.metadata);
+    }
 });
 
 function saveQueue() {
@@ -54,140 +56,133 @@ function loadQueue() {
 async function playSong(guildId, textChannel, retry = 0) {
     const queue = queues.get(guildId);
     if (!queue || queue.length === 0) {
-        await deleteLastEmbeds(guildId); // Delete the last remaining embeds
-        clearQueueFile(); // Clear the queue file when there are no more songs
+        await deleteLastEmbeds(guildId);
+        clearQueueFile();
         const embed = new Discord.MessageEmbed()
             .setColor('#0099ff')
             .setTitle('Music Stopped')
             .setDescription('The queue is empty, so the music has stopped playing.');
         const msg = await textChannel.send({ embeds: [embed] });
 
-        // Remove "Music Stopped" embed after 15 seconds
         setTimeout(async () => {
-            try {
-                await msg.delete();
-            } catch (error) {
-                console.error('Error deleting "Music Stopped" message:', error);
-            }
+            await deleteMessage(msg);
         }, 15000);
 
         return;
     }
 
     const url = queue[0];
+    if (!ytdl.validateURL(url)) {
+        console.error('Invalid URL:', url);
+        queue.shift();
+        saveQueue();
+        await playSong(guildId, textChannel);
+        return;
+    }
+
     let stream;
     try {
-        stream = ytdl(url, { filter: 'audioonly' });
+        stream = ytdl(url, { filter: 'audioonly', highWaterMark: 1 << 25 });
     } catch (error) {
         console.error('Stream error:', error);
         if (retry < 3) {
             console.log(`Retrying... (${retry + 1})`);
-            playSong(guildId, textChannel, retry + 1);
+            await playSong(guildId, textChannel, retry + 1);
         } else {
-            queue.shift(); // Skip the problematic song
+            queue.shift();
             saveQueue();
-            playSong(guildId, textChannel);
+            await playSong(guildId, textChannel);
         }
         return;
     }
 
-    const resource = createAudioResource(stream);
-    const info = await ytdl.getInfo(url);
+    const resource = createAudioResource(stream, { inlineVolume: true });
+    let info;
+    try {
+        info = await ytdl.getInfo(url);
+    } catch (error) {
+        console.error('Error getting video info:', error);
+        if (retry < 3) {
+            console.log(`Retrying info fetch... (${retry + 1})`);
+            await playSong(guildId, textChannel, retry + 1);
+        } else {
+            queue.shift();
+            saveQueue();
+            await playSong(guildId, textChannel);
+        }
+        return;
+    }
+
     const title = info.videoDetails.title;
-    const thumbnailUrl = info.videoDetails.thumbnails[0].url; // Get the first thumbnail URL
+    const thumbnailUrl = info.videoDetails.thumbnails[0].url;
 
     player.play(resource);
+    console.log(`Playing song: ${title}`);
 
     player.once(AudioPlayerStatus.Idle, async () => {
-        if (lastAddedToQueue.has(guildId)) {
-            const lastMessage = lastAddedToQueue.get(guildId);
-            try {
-                if (lastMessage) await lastMessage.delete();
-            } catch (error) {
-                if (error.code !== 10008) {
-                    console.error('Error deleting last "Song Added to Queue" message:', error);
-                }
-            }
-        }
-
+        await deleteMessage(lastAddedToQueue.get(guildId));
         queue.shift();
         saveQueue();
-        playSong(guildId, textChannel);
+        await playSong(guildId, textChannel);
     });
 
     if (textChannel) {
-        if (lastNowPlaying.has(guildId)) {
-            const lastMessage = lastNowPlaying.get(guildId);
-            try {
-                if (lastMessage) await lastMessage.delete();
-            } catch (error) {
-                if (error.code !== 10008) {
-                    console.error('Error deleting last "Now Playing" message:', error);
-                }
-            }
-        }
-
-        if (lastUpNext.has(guildId)) {
-            const lastUpNextMessage = lastUpNext.get(guildId);
-            try {
-                if (lastUpNextMessage) await lastUpNextMessage.delete();
-            } catch (error) {
-                if (error.code !== 10008) {
-                    console.error('Error deleting last "Up Next" message:', error);
-                }
-            }
-            lastUpNext.delete(guildId);
-        }
+        await deleteMessage(lastNowPlaying.get(guildId));
+        await deleteMessage(lastUpNext.get(guildId));
 
         const embed = new Discord.MessageEmbed()
-            .setColor('#00ff00') // Green color
+            .setColor('#00ff00')
             .setTitle('Now Playing')
             .setDescription(title)
-            .setThumbnail(thumbnailUrl); // Set the thumbnail image
+            .setThumbnail(thumbnailUrl);
 
         const nowPlayingMessage = await textChannel.send({ embeds: [embed] });
-        lastNowPlaying.set(guildId, nowPlayingMessage); // Track the last "Now Playing" message
+        lastNowPlaying.set(guildId, nowPlayingMessage);
 
         if (queue[1]) {
-            const nextInfo = await ytdl.getInfo(queue[1]);
+            let nextInfo;
+            try {
+                nextInfo = await ytdl.getInfo(queue[1]);
+            } catch (error) {
+                console.error('Error getting next video info:', error);
+                return;
+            }
             const nextTitle = nextInfo.videoDetails.title;
             const nextEmbed = new Discord.MessageEmbed()
                 .setColor('#0099ff')
                 .setTitle('Up Next')
                 .setDescription(nextTitle);
             const upNextMessage = await textChannel.send({ embeds: [nextEmbed] });
-            lastUpNext.set(guildId, upNextMessage); // Track the last "Up Next" message
+            lastUpNext.set(guildId, upNextMessage);
+        }
+    }
+}
+
+async function deleteMessage(message) {
+    if (!message) return;
+    try {
+        await message.delete();
+    } catch (error) {
+        if (error.code === 10008) {
+            // Ignore the specific "Unknown Message" error
+        } else {
+            console.error('Error deleting message:', error);
         }
     }
 }
 
 async function deleteLastEmbeds(guildId) {
-    try {
-        if (lastNowPlaying.has(guildId)) {
-            const lastMessage = lastNowPlaying.get(guildId);
-            if (lastMessage) await lastMessage.delete();
-            lastNowPlaying.delete(guildId);
-        }
-        if (lastAddedToQueue.has(guildId)) {
-            const lastMessage = lastAddedToQueue.get(guildId);
-            if (lastMessage) await lastMessage.delete();
-            lastAddedToQueue.delete(guildId);
-        }
-        if (lastUpNext.has(guildId)) {
-            const lastMessage = lastUpNext.get(guildId);
-            if (lastMessage) await lastMessage.delete();
-            lastUpNext.delete(guildId);
-        }
-    } catch (error) {
-        if (error.code !== 10008) {
-            console.error('Error deleting last embed message:', error);
-        }
-    }
+    await deleteMessage(lastNowPlaying.get(guildId));
+    await deleteMessage(lastAddedToQueue.get(guildId));
+    await deleteMessage(lastUpNext.get(guildId));
+    lastNowPlaying.delete(guildId);
+    lastAddedToQueue.delete(guildId);
+    lastUpNext.delete(guildId);
 }
 
 client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
-    loadQueue(); // Load the queue from the JSON file when the bot starts
+    loadQueue();
 });
 
 client.once('reconnecting', () => {
@@ -216,11 +211,11 @@ client.on('messageCreate', async message => {
             return;
         }
 
-        if (args.length === 0) {
+        if (args.length === 0 || !ytdl.validateURL(args[0])) {
             const embed = new Discord.MessageEmbed()
                 .setColor('#ff0000')
                 .setTitle('Error')
-                .setDescription('You need to provide a YouTube URL!');
+                .setDescription('You need to provide a valid YouTube URL!');
             await message.channel.send({ embeds: [embed] });
             return;
         }
@@ -240,41 +235,50 @@ client.on('messageCreate', async message => {
         }
 
         queue.push(args[0]);
-        saveQueue(); // Save the queue to the JSON file
+        saveQueue();
 
-        const info = await ytdl.getInfo(args[0]);
+        let info;
+        try {
+            info = await ytdl.getInfo(args[0]);
+        } catch (error) {
+            console.error('Error getting video info:', error);
+            return;
+        }
         const title = info.videoDetails.title;
 
-        if (lastAddedToQueue.has(message.guild.id)) {
-            const lastMessage = lastAddedToQueue.get(message.guild.id);
-            try {
-                if (lastMessage) await lastMessage.delete();
-            } catch (error) {
-                if (error.code !== 10008) {
-                    console.error('Error deleting last "Song Added to Queue" message:', error);
-                }
-            }
-        }
+        await deleteMessage(lastAddedToQueue.get(message.guild.id));
 
         const embed = new Discord.MessageEmbed()
             .setColor('#0099ff')
             .setTitle('Song Added to Queue')
             .setDescription(title);
         const addedToQueueMessage = await message.channel.send({ embeds: [embed] });
-        lastAddedToQueue.set(message.guild.id, addedToQueueMessage); // Track the last "Song Added to Queue" message
-        message.delete().catch(console.error);
+        lastAddedToQueue.set(message.guild.id, addedToQueueMessage);
+        try {
+            await message.delete();
+        } catch (error) {
+            if (error.code !== 10008) {
+                console.error('Error deleting message:', error);
+            }
+        }
 
         if (queue.length === 1) {
-            playSong(message.guild.id, message.channel);
-        } else if (queue.length === 2) { // If the new song is the second in the queue
-            const nextInfo = await ytdl.getInfo(queue[1]);
+            await playSong(message.guild.id, message.channel);
+        } else if (queue.length === 2) {
+            let nextInfo;
+            try {
+                nextInfo = await ytdl.getInfo(queue[1]);
+            } catch (error) {
+                console.error('Error getting next video info:', error);
+                return;
+            }
             const nextTitle = nextInfo.videoDetails.title;
             const nextEmbed = new Discord.MessageEmbed()
                 .setColor('#0099ff')
                 .setTitle('Up Next')
                 .setDescription(nextTitle);
             const upNextMessage = await message.channel.send({ embeds: [nextEmbed] });
-            lastUpNext.set(message.guild.id, upNextMessage); // Track the last "Up Next" message
+            lastUpNext.set(message.guild.id, upNextMessage);
         }
     } else if (command === 'stop') {
         const connection = getVoiceConnection(message.guild.id);
@@ -282,9 +286,8 @@ client.on('messageCreate', async message => {
             connection.destroy();
         }
         queues.delete(message.guild.id);
-        saveQueue(); // Save the empty queue to the JSON file
+        saveQueue();
 
-        // Directly handle deletion of embeds here
         await deleteLastEmbeds(message.guild.id);
 
         const embed = new Discord.MessageEmbed()
@@ -293,16 +296,17 @@ client.on('messageCreate', async message => {
             .setDescription('The music has been stopped and the queue has been cleared.');
         const msg = await message.channel.send({ embeds: [embed] });
 
-        // Remove "Music Stopped" embed after 15 seconds
         setTimeout(async () => {
-            try {
-                await msg.delete();
-            } catch (error) {
-                console.error('Error deleting "Music Stopped" message:', error);
-            }
+            await deleteMessage(msg);
         }, 15000);
 
-        message.delete().catch(console.error);
+        try {
+            await message.delete();
+        } catch (error) {
+            if (error.code !== 10008) {
+                console.error('Error deleting message:', error);
+            }
+        }
     } else if (command === 'pause') {
         if (player.state.status !== AudioPlayerStatus.Paused) {
             player.pause();
@@ -313,7 +317,13 @@ client.on('messageCreate', async message => {
             .setTitle('Music Paused')
             .setDescription('The music has been paused.');
         await message.channel.send({ embeds: [embed] });
-        message.delete().catch(console.error);
+        try {
+            await message.delete();
+        } catch (error) {
+            if (error.code !== 10008) {
+                console.error('Error deleting message:', error);
+            }
+        }
     } else if (command === 'resume') {
         if (player.state.status === AudioPlayerStatus.Paused) {
             player.unpause();
@@ -324,24 +334,25 @@ client.on('messageCreate', async message => {
             .setTitle('Music Resumed')
             .setDescription('The music has been resumed.');
         await message.channel.send({ embeds: [embed] });
-        message.delete().catch(console.error);
+        try {
+            await message.delete();
+        } catch (error) {
+            if (error.code !== 10008) {
+                console.error('Error deleting message:', error);
+            }
+        }
     } else if (command === 'skip') {
         const queue = queues.get(message.guild.id);
         if (queue && queue.length > 0) {
-            player.stop(); // Stop the current song, triggering the player to move to the next song
+            player.stop();
             const embed = new Discord.MessageEmbed()
                 .setColor('#0099ff')
                 .setTitle('Song Skipped')
                 .setDescription('The current song has been skipped.');
             const msg = await message.channel.send({ embeds: [embed] });
 
-            // Remove "Song Skipped" embed after 5 seconds
             setTimeout(async () => {
-                try {
-                    await msg.delete();
-                } catch (error) {
-                    console.error('Error deleting "Song Skipped" message:', error);
-                }
+                await deleteMessage(msg);
             }, 5000);
 
         } else {
@@ -351,7 +362,13 @@ client.on('messageCreate', async message => {
                 .setDescription('There are no songs in the queue to skip.');
             await message.channel.send({ embeds: [embed] });
         }
-        message.delete().catch(console.error);
+        try {
+            await message.delete();
+        } catch (error) {
+            if (error.code !== 10008) {
+                console.error('Error deleting message:', error);
+            }
+        }
     } else if (command === 'help') {
         const embed = new Discord.MessageEmbed()
             .setColor('#0099ff')
@@ -366,7 +383,9 @@ client.on('messageCreate', async message => {
             );
 
         const helpMessage = await message.channel.send({ embeds: [embed] });
-        setTimeout(() => helpMessage.delete().catch(console.error), 10000);
+        setTimeout(async () => {
+            await deleteMessage(helpMessage);
+        }, 10000);
     }
 });
 
